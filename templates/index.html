@@ -1,0 +1,289 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TextSummarizer — NLP Project</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
+  <link rel="icon" href="data:,">
+</head>
+<body>
+
+  <div class="page-wrapper">
+
+    <!-- ── Navbar ──────────────────────────────────────────── -->
+    <nav class="navbar">
+      <a class="navbar-brand" href="/">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24">
+            <path d="M4 6h16M4 10h10M4 14h12M4 18h8" />
+          </svg>
+        </div>
+        <span class="brand-name">TextSummarizer</span>
+      </a>
+
+      <div class="navbar-actions">
+        <button class="btn btn-train" onclick="triggerTrain()" id="train-btn">
+          ⚙ Train Model
+        </button>
+      </div>
+    </nav>
+
+    <!-- ── Train Status Banner ─────────────────────────────── -->
+    <div class="train-banner" id="train-banner">
+      <div class="train-banner-dot"></div>
+      <span id="train-banner-text">Training in progress... this may take a few minutes.</span>
+    </div>
+
+    <!-- ── Flash Messages (from backend) ──────────────────── -->
+    {% if error %}
+    <div class="alert alert-error">
+      <span class="alert-icon">✕</span>
+      <span>{{ error }}</span>
+    </div>
+    {% endif %}
+
+    <!-- ── Hero ───────────────────────────────────────────── -->
+    <div class="hero">
+      <div class="hero-eyebrow">NLP · PEGASUS Transformer</div>
+      <h1 class="hero-title">
+        Condense any text,<br><em>instantly.</em>
+      </h1>
+      <p class="hero-subtitle">
+        Paste a dialogue or article below and get a concise summary
+        powered by a fine-tuned <code>PEGASUS</code> model trained on
+        the SAMSum dataset.
+      </p>
+    </div>
+
+    <!-- ── Editor Grid ────────────────────────────────────── -->
+    <form method="POST" action="/predict" id="predict-form" onsubmit="return handleSubmit(event)">
+      <div class="editor-grid">
+
+        <!-- Input Panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-label">Input Text</span>
+            <span class="panel-meta" id="char-count">0 chars</span>
+          </div>
+          <textarea
+            class="input-textarea"
+            name="text"
+            id="input-text"
+            placeholder="Paste your dialogue, conversation, or article here…"
+            oninput="handleInput()"
+            spellcheck="false"
+          >{{ original_text or "" }}</textarea>
+        </div>
+
+        <!-- Output Panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-label">Summary</span>
+            <button
+              type="button"
+              class="btn-copy {% if summary %}visible{% endif %}"
+              id="copy-btn"
+              onclick="copyToClipboard()"
+            >Copy</button>
+          </div>
+
+          <div class="summary-body" id="summary-body">
+            {% if summary %}
+              <p class="summary-result" id="summary-text">{{ summary }}</p>
+            {% else %}
+              <p class="summary-placeholder" id="summary-placeholder">
+                Your summary will appear here after clicking Summarize.
+              </p>
+            {% endif %}
+          </div>
+
+          <!-- Loading dots (shown via JS while form submits) -->
+          <div class="loading-indicator" id="loading-indicator">
+            <div class="loading-dots">
+              <span></span><span></span><span></span>
+            </div>
+            Generating summary…
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Action Bar ──────────────────────────────────── -->
+      <div class="action-bar">
+        <button type="button" class="btn btn-outline" onclick="clearAll()">
+          Clear
+        </button>
+        <button type="submit" class="btn btn-primary" id="submit-btn">
+          Summarize →
+        </button>
+      </div>
+    </form>
+
+    <!-- ── Stats Row ──────────────────────────────────────── -->
+    <div class="stats-row {% if summary %}visible{% endif %}" id="stats-row">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-original">
+          {% if original_text %}{{ original_text.split()|length }}{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">Original Words</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-summary">
+          {% if summary %}{{ summary.split()|length }}{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">Summary Words</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value highlight" id="stat-ratio">
+          {% if summary and original_text %}
+            {% set orig = original_text.split()|length %}
+            {% set summ = summary.split()|length %}
+            {% if orig > 0 %}
+              {{ ((1 - summ / orig) * 100) | round | int }}%
+            {% else %}—{% endif %}
+          {% else %}—{% endif %}
+        </div>
+        <div class="stat-label">Compression</div>
+      </div>
+    </div>
+
+    <!-- ── Footer ─────────────────────────────────────────── -->
+    <footer class="footer">
+      <p class="footer-text">
+        Routes: <code>POST /predict</code> &nbsp;·&nbsp; <code>GET /train</code>
+        &nbsp;·&nbsp; FastAPI + HuggingFace PEGASUS &nbsp;·&nbsp; Deployed via Docker + AWS ECR + EC2
+      </p>
+      <div class="footer-links">
+        <a href="/docs" target="_blank">API Docs</a>
+        <a href="/train" id="train-link">Train</a>
+      </div>
+    </footer>
+
+  </div><!-- /.page-wrapper -->
+
+
+  <!-- ── JavaScript ─────────────────────────────────────── -->
+  <script>
+
+    /* ── On page load: restore char count if text exists ── */
+    window.addEventListener('DOMContentLoaded', function () {
+      var ta = document.getElementById('input-text');
+      if (ta && ta.value.trim() !== '') {
+        updateCharCount(ta.value);
+      }
+    });
+
+    /* ── Update character counter ────────────────────────── */
+    function handleInput() {
+      var ta = document.getElementById('input-text');
+      updateCharCount(ta.value);
+    }
+
+    function updateCharCount(text) {
+      var el = document.getElementById('char-count');
+      if (el) el.textContent = text.length + ' chars';
+    }
+
+    /* ── Show loading state on form submit ───────────────── */
+    function handleSubmit(event) {
+      var text = document.getElementById('input-text').value.trim();
+      if (!text) {
+        document.getElementById('input-text').focus();
+        event.preventDefault();
+        return false;
+      }
+
+      // Hide placeholder, show loading
+      var placeholder = document.getElementById('summary-placeholder');
+      var summaryText = document.getElementById('summary-text');
+      var loader      = document.getElementById('loading-indicator');
+      var copyBtn     = document.getElementById('copy-btn');
+      var submitBtn   = document.getElementById('submit-btn');
+
+      if (placeholder) placeholder.style.display = 'none';
+      if (summaryText) summaryText.style.display  = 'none';
+      if (loader)      loader.classList.add('active');
+      if (copyBtn)     copyBtn.classList.remove('visible');
+      if (submitBtn) {
+        submitBtn.disabled    = true;
+        submitBtn.textContent = 'Summarizing…';
+      }
+
+      return true;
+    }
+
+    /* ── Clear everything ────────────────────────────────── */
+    function clearAll() {
+      document.getElementById('input-text').value = '';
+      document.getElementById('char-count').textContent = '0 chars';
+
+      var placeholder = document.getElementById('summary-placeholder');
+      var summaryText = document.getElementById('summary-text');
+      var loader      = document.getElementById('loading-indicator');
+      var copyBtn     = document.getElementById('copy-btn');
+      var statsRow    = document.getElementById('stats-row');
+
+      if (placeholder) { placeholder.style.display = ''; placeholder.textContent = 'Your summary will appear here after clicking Summarize.'; }
+      if (summaryText) summaryText.style.display = 'none';
+      if (loader)      loader.classList.remove('active');
+      if (copyBtn)     copyBtn.classList.remove('visible');
+      if (statsRow)    statsRow.classList.remove('visible');
+    }
+
+    /* ── Copy summary to clipboard ───────────────────────── */
+    function copyToClipboard() {
+      var el  = document.getElementById('summary-text');
+      var btn = document.getElementById('copy-btn');
+      if (!el) return;
+
+      navigator.clipboard.writeText(el.textContent.trim()).then(function () {
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1800);
+      }).catch(function () {
+        // Fallback for older browsers
+        var range = document.createRange();
+        range.selectNode(el);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.execCommand('copy');
+        window.getSelection().removeAllRanges();
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1800);
+      });
+    }
+
+    /* ── Trigger /train endpoint ─────────────────────────── */
+    function triggerTrain() {
+      var banner     = document.getElementById('train-banner');
+      var bannerText = document.getElementById('train-banner-text');
+      var trainBtn   = document.getElementById('train-btn');
+
+      banner.classList.add('visible');
+      bannerText.textContent = 'Training in progress… this may take a few minutes.';
+      trainBtn.disabled      = true;
+      trainBtn.textContent   = '⚙ Training…';
+
+      fetch('/train')
+        .then(function (res) { return res.text(); })
+        .then(function (msg) {
+          bannerText.textContent   = '✓ ' + msg;
+          trainBtn.disabled        = false;
+          trainBtn.textContent     = '⚙ Train Model';
+          // Auto-hide banner after 4 seconds
+          setTimeout(function () {
+            banner.classList.remove('visible');
+          }, 4000);
+        })
+        .catch(function (err) {
+          bannerText.textContent = '✕ Training failed: ' + err;
+          trainBtn.disabled      = false;
+          trainBtn.textContent   = '⚙ Train Model';
+        });
+    }
+
+  </script>
+
+</body>
+</html>
